@@ -36,7 +36,7 @@ defmodule Terminator.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:ecto_sql, "~> 3.0"},
-      {:postgrex, "~> 0.14.1"},
+      {:postgrex, ">= 0.14.1"},
       {:ex_doc, "~> 0.19", only: :dev, runtime: false},
       {:optimus, "~> 0.1.0", only: :dev},
       {:mix_test_watch, "~> 0.8", only: :dev, runtime: false},
