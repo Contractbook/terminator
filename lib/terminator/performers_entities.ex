@@ -7,7 +7,7 @@ defmodule Terminator.PerformersEntities do
 
   schema "terminator_performers_entities" do
     belongs_to(:performer, Terminator.Performer)
-    field(:assoc_id, :integer)
+    field(:assoc_id, :binary_id)
     field(:assoc_type, :string)
     field(:abilities, {:array, :string}, default: [])
 
