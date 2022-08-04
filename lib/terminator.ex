@@ -235,10 +235,22 @@ defmodule Terminator do
         end
       end
   """
+
+  # ************ SHOULD BE REMOVED *******************
   @spec is_authorized?() :: :ok | {:error, String.t()}
   def is_authorized? do
     perform_authorization!()
   end
+
+  # ************ SHOULD BE REMOVED *******************
+
+  # ************ NEW IMPLEMENTATION *******************
+  @spec is_authorized?(binary()) :: :ok | {:error, String.t()}
+  def is_authorized?(performer_id) do
+    perform_authorization_with_performer_id!(performer_id)
+  end
+
+  # ************ NEW IMPLEMENTATION *******************
 
   @doc """
   Perform authorization on passed performer and abilities
@@ -270,6 +282,7 @@ defmodule Terminator do
   end
 
   @doc false
+  # ************ SHOULD BE REMOVED *******************
   def perform_authorization!(
         current_performer \\ nil,
         required_abilities \\ [],
@@ -279,7 +292,9 @@ defmodule Terminator do
     current_performer =
       case current_performer do
         nil ->
-          {:ok, current_performer} = Terminator.Registry.lookup(:current_performer)
+          {:ok, current_performer} =
+            Terminator.Registry.lookup({:current_performer, current_performer.id})
+
           current_performer
 
         _ ->
@@ -330,6 +345,71 @@ defmodule Terminator do
     end
   end
 
+  # ************ SHOULD BE REMOVED *******************
+
+  # ************ NEW IMPLEMENTATION *******************
+  def perform_authorization_with_performer_id!(
+        current_performer_id,
+        required_abilities \\ [],
+        required_roles \\ [],
+        extra_rules \\ []
+      ) do
+    {:ok, stored_performer} =
+      Terminator.Registry.lookup({:current_performer, current_performer_id})
+
+    {:ok, current_performer} = check_stored_performer(stored_performer, current_performer_id)
+
+    required_abilities =
+      ensure_array_from_ets(required_abilities, :required_abilities, current_performer_id)
+
+    required_roles = ensure_array_from_ets(required_roles, :required_roles, current_performer_id)
+    extra_rules = ensure_array_from_ets(extra_rules, :extra_rules, current_performer_id)
+
+    calculated_permissions =
+      ensure_array_from_ets([], :calculated_permissions, current_performer_id)
+
+    # If no performer is given we can assume that permissions are not granted
+    if is_nil(current_performer) do
+      {:error, "Performer is not granted to perform this action"}
+    else
+      # If no permissions were required then we can assume performe is granted
+      if length(required_abilities) + length(required_roles) + length(calculated_permissions) +
+           length(extra_rules) == 0 do
+        :ok
+      else
+        # 1st layer of authorization (optimize db load)
+        first_layer =
+          authorize!(
+            [
+              authorize_abilities(current_performer.abilities, required_abilities)
+            ] ++ calculated_permissions ++ extra_rules
+          )
+
+        if first_layer == :ok do
+          first_layer
+        else
+          # 2nd layer with DB preloading of roles
+          %{roles: current_roles} = load_performer_roles(current_performer)
+
+          second_layer =
+            authorize!([
+              authorize_roles(current_roles, required_roles),
+              authorize_inherited_abilities(current_roles, required_abilities)
+            ])
+
+          if second_layer == :ok do
+            second_layer
+          else
+            {:error, "Performer is not granted to perform this action"}
+          end
+        end
+      end
+    end
+  end
+
+  # ************ NEW IMPLEMENTATION *******************
+
+  # ************ SHOULD BE DEPRECATED *******************
   defp ensure_array_from_ets(value, name) do
     value =
       case value do
@@ -346,6 +426,28 @@ defmodule Terminator do
       _ -> value
     end
   end
+
+  # ************ SHOULD BE DEPRECATED *******************
+
+  # ************ NEW IMPLEMENTATION *******************
+  defp ensure_array_from_ets(value, name, performer_id) do
+    value =
+      case value do
+        [] ->
+          {:ok, value} = Terminator.Registry.lookup({name, performer_id})
+          value
+
+        value ->
+          value
+      end
+
+    case value do
+      nil -> []
+      _ -> value
+    end
+  end
+
+  # ************ NEW IMPLEMENTATION *******************
 
   @doc false
   def create_terminator() do
@@ -368,7 +470,7 @@ defmodule Terminator do
   end
 
   @doc false
-  @spec load_and_store_performer!(integer()) :: {:ok, Terminator.Performer.t()}
+  @spec load_and_store_performer!(binary()) :: {:ok, Terminator.Performer.t()}
   def load_and_store_performer!(performer_id) do
     performer = Terminator.Repo.get!(Terminator.Performer, performer_id)
     store_performer!(performer)
@@ -382,8 +484,8 @@ defmodule Terminator do
 
   @doc false
   @spec store_performer!(Terminator.Performer.t()) :: {:ok, Terminator.Performer.t()}
-  def store_performer!(%Terminator.Performer{id: _id} = performer) do
-    Terminator.Registry.insert(:current_performer, performer)
+  def store_performer!(%Terminator.Performer{id: id} = performer) do
+    Terminator.Registry.insert({:current_performer, id}, performer)
     {:ok, performer}
   end
 
@@ -464,6 +566,8 @@ defmodule Terminator do
         end
       end
   """
+
+  # ************ SHOULD BE REMOVED *******************
   @spec has_ability(atom()) :: {:ok, atom()}
   def has_ability(ability) do
     Terminator.Registry.add(:required_abilities, Atom.to_string(ability))
@@ -475,6 +579,47 @@ defmodule Terminator do
 
     Terminator.Registry.add(:extra_rules, has_ability?(current_performer, ability, entity))
     {:ok, ability}
+  end
+
+  # ************ SHOULD BE REMOVED *******************
+
+  # ************ NEW IMPLEMENTATION *******************
+  def has_ability(performer_id, ability) do
+    {:ok, stored_performer} = Terminator.Registry.lookup({:current_performer, performer_id})
+    {:ok, current_performer} = check_stored_performer(stored_performer, performer_id)
+
+    Terminator.Registry.add({:required_abilities, current_performer.id}, Atom.to_string(ability))
+
+    {:ok, ability}
+  end
+
+  def has_ability(performer_id, ability, %{__struct__: _entity_name, id: _entity_id} = entity) do
+    {:ok, stored_performer} = Terminator.Registry.lookup({:current_performer, performer_id})
+    {:ok, current_performer} = check_stored_performer(stored_performer, performer_id)
+
+    Terminator.Registry.add(
+      {:extra_rules, current_performer.id},
+      has_ability?(current_performer, ability, entity)
+    )
+
+    {:ok, ability}
+  end
+
+  # ************ NEW IMPLEMENTATION *******************
+
+  defp store_current_performer(performer_id) do
+    reset_session()
+    load_and_store_performer!(performer_id)
+  end
+
+  defp check_stored_performer(nil, performer_id), do: store_current_performer(performer_id)
+
+  defp check_stored_performer(%Terminator.Performer{} = stored_performer, current_performer_id) do
+    if current_performer_id == stored_performer.id do
+      {:ok, stored_performer}
+    else
+      store_current_performer(current_performer_id)
+    end
   end
 
   @doc """
